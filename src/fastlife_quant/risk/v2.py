@@ -340,6 +340,22 @@ class RiskEngineV2:
             return "side must be 1 (buy) or -1 (sell)"
         return None
 
+    def _spread_cost_per_lot(self, instrument: InstrumentSpec) -> float:
+        spread = _coerce_float(instrument.spread, "instrument.spread")
+        tick_size = _coerce_float(instrument.tick_size, "instrument.tick_size")
+        tick_value = _coerce_float(instrument.tick_value_per_lot, "instrument.tick_value_per_lot")
+        if spread is None or tick_size is None or tick_value is None:
+            return 0.0
+        if spread <= 0:
+            return 0.0
+        if tick_size <= 0:
+            return 0.0
+        spread_ticks = spread / tick_size
+        cost = spread_ticks * tick_value
+        if not isfinite(cost):
+            return 0.0
+        return max(cost, 0.0)
+
     def _risk_per_lot(self, instrument: InstrumentSpec, stop_distance: float) -> float:
         tick_count = stop_distance / max(instrument.tick_size, 1e-9)
         result = (tick_count * instrument.tick_value_per_lot) + instrument.round_trip_cost_per_lot
@@ -444,14 +460,14 @@ class RiskEngineV2:
         used_margin = snapshot_norm["used_margin"]
         open_exposure = snapshot_norm["open_exposure"]
 
-        if daily_pnl < -(balance * self.max_daily_loss_pct):
+        if daily_pnl <= -(balance * self.max_daily_loss_pct):
             return RiskDecision(False, "daily loss limit reached")
 
         peak = max(peak_equity, 1e-9)
         drawdown = (peak - equity) / peak
         if not isfinite(drawdown):
             return RiskDecision(False, "drawdown is not finite")
-        if drawdown > self.max_drawdown_pct:
+        if drawdown >= self.max_drawdown_pct:
             return RiskDecision(False, "drawdown limit reached")
 
         risk_fraction = _coerce_float(risk_pct if risk_pct is not None else self.risk_pct, "risk_pct")
@@ -482,8 +498,9 @@ class RiskEngineV2:
             account_currency=instrument.account_currency,
         )
 
-        risk_per_lot = self._risk_per_lot(normalized_instrument, stop_distance)
-        reward_per_lot = self._reward_per_lot(normalized_instrument, reward_distance)
+        spread_cost_per_lot = self._spread_cost_per_lot(normalized_instrument)
+        risk_per_lot = self._risk_per_lot(normalized_instrument, stop_distance) + spread_cost_per_lot
+        reward_per_lot = self._reward_per_lot(normalized_instrument, reward_distance) - spread_cost_per_lot
 
         if not isfinite(risk_per_lot) or risk_per_lot <= 0:
             return RiskDecision(False, "computed risk per lot is invalid")
