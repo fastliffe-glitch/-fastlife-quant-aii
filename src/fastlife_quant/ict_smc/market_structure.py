@@ -8,20 +8,17 @@ from fastlife_quant.ict_smc.config import ICTSMCConfig
 from fastlife_quant.ict_smc.events import ICTEvent
 
 
-def _ref_bars(df: pd.DataFrame, start_idx: int, end_idx: int) -> list[pd.Timestamp]:
-    return [ts for ts in df["timestamp"].iloc[start_idx : end_idx + 1].tolist()]
+def _reference_bars(df: pd.DataFrame, start: int, end: int) -> list[pd.Timestamp]:
+    return [ts for ts in df["timestamp"].iloc[start : end + 1].tolist()]
 
 
 def detect_swing_high(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None) -> ICTEvent | None:
     config = config or ICTSMCConfig()
-    if idx < config.swing_left_bars:
+    if idx < config.swing_left_bars or idx >= len(df):
         return None
-    if idx >= len(df):
-        return None
-    left = df.iloc[max(0, idx - config.swing_left_bars) : idx + 1]
     current = df.iloc[idx]
-    is_local_high = bool(current["high"] >= left["high"].max())
-    if not is_local_high:
+    left = df.iloc[max(0, idx - config.swing_left_bars) : idx + 1]
+    if float(current["high"]) < float(left["high"].max()):
         return None
     confirmed = idx + config.swing_right_bars < len(df)
     return ICTEvent(
@@ -30,8 +27,8 @@ def detect_swing_high(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = 
         timeframe=str(df["timeframe"].iloc[idx]) if "timeframe" in df.columns else "unknown",
         timestamp=current["timestamp"],
         price=float(current["high"]),
-        reference_bars=_ref_bars(df, max(0, idx - config.swing_left_bars), idx),
-        trigger_conditions=("local_high", "left_context_3_bars", "confirmation_closed" if confirmed else "pending_confirmation"),
+        reference_bars=_reference_bars(df, max(0, idx - config.swing_left_bars), idx),
+        trigger_conditions=("local_high", "left_context", "confirmation_closed" if confirmed else "pending_confirmation"),
         parameters={"left_bars": config.swing_left_bars, "right_bars": config.swing_right_bars},
         confirmed=confirmed,
         invalidation_level=float(current["high"]),
@@ -40,14 +37,11 @@ def detect_swing_high(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = 
 
 def detect_swing_low(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None) -> ICTEvent | None:
     config = config or ICTSMCConfig()
-    if idx < config.swing_left_bars:
+    if idx < config.swing_left_bars or idx >= len(df):
         return None
-    if idx >= len(df):
-        return None
-    left = df.iloc[max(0, idx - config.swing_left_bars) : idx + 1]
     current = df.iloc[idx]
-    is_local_low = bool(current["low"] <= left["low"].min())
-    if not is_local_low:
+    left = df.iloc[max(0, idx - config.swing_left_bars) : idx + 1]
+    if float(current["low"]) > float(left["low"].min()):
         return None
     confirmed = idx + config.swing_right_bars < len(df)
     return ICTEvent(
@@ -56,8 +50,8 @@ def detect_swing_low(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = N
         timeframe=str(df["timeframe"].iloc[idx]) if "timeframe" in df.columns else "unknown",
         timestamp=current["timestamp"],
         price=float(current["low"]),
-        reference_bars=_ref_bars(df, max(0, idx - config.swing_left_bars), idx),
-        trigger_conditions=("local_low", "left_context_3_bars", "confirmation_closed" if confirmed else "pending_confirmation"),
+        reference_bars=_reference_bars(df, max(0, idx - config.swing_left_bars), idx),
+        trigger_conditions=("local_low", "left_context", "confirmation_closed" if confirmed else "pending_confirmation"),
         parameters={"left_bars": config.swing_left_bars, "right_bars": config.swing_right_bars},
         confirmed=confirmed,
         invalidation_level=float(current["low"]),
@@ -79,7 +73,7 @@ def detect_bos(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None) -
             timestamp=current["timestamp"],
             price=float(current["close"]),
             reference_bars=[prev2["timestamp"], prev["timestamp"], current["timestamp"]],
-            trigger_conditions=("close_gt_previous_close", "sequence_up",),
+            trigger_conditions=("sequence_up",),
             parameters={"structural_confirmation_bars": config.structural_confirmation_bars},
             confirmed=idx >= config.structural_confirmation_bars,
             invalidation_level=float(prev["close"]),
@@ -92,7 +86,7 @@ def detect_bos(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None) -
             timestamp=current["timestamp"],
             price=float(current["close"]),
             reference_bars=[prev2["timestamp"], prev["timestamp"], current["timestamp"]],
-            trigger_conditions=("close_lt_previous_close", "sequence_down",),
+            trigger_conditions=("sequence_down",),
             parameters={"structural_confirmation_bars": config.structural_confirmation_bars},
             confirmed=idx >= config.structural_confirmation_bars,
             invalidation_level=float(prev["close"]),
@@ -115,7 +109,7 @@ def detect_choch(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None)
             timestamp=current["timestamp"],
             price=float(current["close"]),
             reference_bars=[prev2["timestamp"], prev["timestamp"], current["timestamp"]],
-            trigger_conditions=("trend_change_up", "close_above_previous_down_trend"),
+            trigger_conditions=("trend_change_up",),
             parameters={"structural_confirmation_bars": config.structural_confirmation_bars},
             confirmed=idx >= config.structural_confirmation_bars,
             invalidation_level=float(prev["low"]),
@@ -128,7 +122,7 @@ def detect_choch(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None)
             timestamp=current["timestamp"],
             price=float(current["close"]),
             reference_bars=[prev2["timestamp"], prev["timestamp"], current["timestamp"]],
-            trigger_conditions=("trend_change_down", "close_below_previous_up_trend"),
+            trigger_conditions=("trend_change_down",),
             parameters={"structural_confirmation_bars": config.structural_confirmation_bars},
             confirmed=idx >= config.structural_confirmation_bars,
             invalidation_level=float(prev["high"]),
@@ -152,7 +146,7 @@ def detect_mss(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None) -
             timestamp=current["timestamp"],
             price=float(current["close"]),
             reference_bars=[prior_window["timestamp"].iloc[0], prev["timestamp"], current["timestamp"]],
-            trigger_conditions=("momentum_shift_bullish", "new_relative_strength"),
+            trigger_conditions=("momentum_shift_bullish",),
             parameters={"structural_confirmation_bars": config.structural_confirmation_bars},
             confirmed=idx >= config.structural_confirmation_bars,
             invalidation_level=float(prev["low"]),
@@ -165,7 +159,7 @@ def detect_mss(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None) -
             timestamp=current["timestamp"],
             price=float(current["close"]),
             reference_bars=[prior_window["timestamp"].iloc[0], prev["timestamp"], current["timestamp"]],
-            trigger_conditions=("momentum_shift_bearish", "new_relative_strength"),
+            trigger_conditions=("momentum_shift_bearish",),
             parameters={"structural_confirmation_bars": config.structural_confirmation_bars},
             confirmed=idx >= config.structural_confirmation_bars,
             invalidation_level=float(prev["high"]),
@@ -178,7 +172,7 @@ def detect_internal_structure(df: pd.DataFrame, idx: int, config: ICTSMCConfig |
         return None
     current = df.iloc[idx]
     prev = df.iloc[idx - 1]
-    if current["high"] > prev["high"] and current["low"] > prev["low"]:
+    if float(current["high"]) > float(prev["high"]) and float(current["low"]) > float(prev["low"]):
         return ICTEvent(
             event_type="internal_structure",
             direction="bullish",
@@ -187,11 +181,11 @@ def detect_internal_structure(df: pd.DataFrame, idx: int, config: ICTSMCConfig |
             price=float(current["close"]),
             reference_bars=[prev["timestamp"], current["timestamp"]],
             trigger_conditions=("higher_high", "higher_low"),
-            parameters={"confirmation_only_closed": bool(config.confirmation_only_closed) if config else True},
+            parameters={"confirmation_only_closed": bool((config or ICTSMCConfig()).confirmation_only_closed)},
             confirmed=True,
             invalidation_level=float(prev["low"]),
         )
-    if current["high"] < prev["high"] and current["low"] < prev["low"]:
+    if float(current["high"]) < float(prev["high"]) and float(current["low"]) < float(prev["low"]):
         return ICTEvent(
             event_type="internal_structure",
             direction="bearish",
@@ -200,7 +194,7 @@ def detect_internal_structure(df: pd.DataFrame, idx: int, config: ICTSMCConfig |
             price=float(current["close"]),
             reference_bars=[prev["timestamp"], current["timestamp"]],
             trigger_conditions=("lower_high", "lower_low"),
-            parameters={"confirmation_only_closed": bool(config.confirmation_only_closed) if config else True},
+            parameters={"confirmation_only_closed": bool((config or ICTSMCConfig()).confirmation_only_closed)},
             confirmed=True,
             invalidation_level=float(prev["high"]),
         )
@@ -212,7 +206,7 @@ def detect_external_structure(df: pd.DataFrame, idx: int, config: ICTSMCConfig |
         return None
     current = df.iloc[idx]
     prev = df.iloc[idx - 1]
-    if current["high"] > prev["high"] and current["low"] < prev["low"]:
+    if float(current["high"]) > float(prev["high"]) and float(current["low"]) < float(prev["low"]):
         return ICTEvent(
             event_type="external_structure",
             direction="bullish",
@@ -221,11 +215,11 @@ def detect_external_structure(df: pd.DataFrame, idx: int, config: ICTSMCConfig |
             price=float(current["close"]),
             reference_bars=[prev["timestamp"], current["timestamp"]],
             trigger_conditions=("higher_high", "lower_low"),
-            parameters={"confirmation_only_closed": bool(config.confirmation_only_closed) if config else True},
+            parameters={"confirmation_only_closed": bool((config or ICTSMCConfig()).confirmation_only_closed)},
             confirmed=True,
             invalidation_level=float(prev["close"]),
         )
-    if current["high"] < prev["high"] and current["low"] > prev["low"]:
+    if float(current["high"]) < float(prev["high"]) and float(current["low"]) > float(prev["low"]):
         return ICTEvent(
             event_type="external_structure",
             direction="bearish",
@@ -234,7 +228,7 @@ def detect_external_structure(df: pd.DataFrame, idx: int, config: ICTSMCConfig |
             price=float(current["close"]),
             reference_bars=[prev["timestamp"], current["timestamp"]],
             trigger_conditions=("lower_high", "higher_low"),
-            parameters={"confirmation_only_closed": bool(config.confirmation_only_closed) if config else True},
+            parameters={"confirmation_only_closed": bool((config or ICTSMCConfig()).confirmation_only_closed)},
             confirmed=True,
             invalidation_level=float(prev["close"]),
         )
