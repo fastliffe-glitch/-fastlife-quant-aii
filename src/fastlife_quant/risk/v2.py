@@ -129,6 +129,11 @@ def _normalize_instrument(instrument: Any) -> Optional[Dict[str, Any]]:
 
 @dataclass(frozen=True)
 class InstrumentSpec:
+    """Instrument specification.
+
+    contract_size is the number of units of the base asset per lot.
+    """
+
     symbol: str
     contract_size: float
     tick_size: float
@@ -144,6 +149,13 @@ class InstrumentSpec:
 
 @dataclass(frozen=True)
 class AccountSnapshot:
+    """Account snapshot denominated in the account currency.
+
+    balance, equity, daily_pnl, used_margin and the broker margin returned by the
+    margin provider are all expressed in the account currency. The same applies to
+    the balance/equity/daily_pnl values used for risk validation.
+    """
+
     balance: float
     equity: float
     daily_pnl: float
@@ -205,6 +217,9 @@ class RiskEngineV2:
       - entry price
       - instrument object
 
+    The provider result must be expressed in the account currency, consistent with
+    balance, equity, daily_pnl, and used_margin.
+
     There is no direct bypass via margin_required override.
     """
 
@@ -215,6 +230,7 @@ class RiskEngineV2:
         max_daily_loss_pct: float = 0.03,
         max_drawdown_pct: float = 0.20,
         max_margin_utilization_pct: float = 0.75,
+        max_exposure_notional: Optional[float] = None,
         stale_seconds: int = 60,
         margin_provider: Optional[Callable[[str, int, float, float, InstrumentSpec], float]] = None,
     ) -> None:
@@ -223,12 +239,14 @@ class RiskEngineV2:
             max_daily_loss_pct=max_daily_loss_pct,
             max_drawdown_pct=max_drawdown_pct,
             max_margin_utilization_pct=max_margin_utilization_pct,
+            max_exposure_notional=max_exposure_notional,
             stale_seconds=stale_seconds,
         )
         self.risk_pct = float(risk_pct)
         self.max_daily_loss_pct = float(max_daily_loss_pct)
         self.max_drawdown_pct = float(max_drawdown_pct)
         self.max_margin_utilization_pct = float(max_margin_utilization_pct)
+        self.max_exposure_notional = None if max_exposure_notional is None else float(max_exposure_notional)
         self.stale_seconds = int(stale_seconds)
         self.margin_provider = margin_provider
 
@@ -239,6 +257,7 @@ class RiskEngineV2:
         max_daily_loss_pct: float,
         max_drawdown_pct: float,
         max_margin_utilization_pct: float,
+        max_exposure_notional: Optional[float],
         stale_seconds: int,
     ) -> None:
         for name, value in {
@@ -254,6 +273,11 @@ class RiskEngineV2:
                 raise ValueError(f"{name} must be > 0")
             if f_value >= 1.0:
                 raise ValueError(f"{name} must be < 1.0")
+
+        if max_exposure_notional is not None:
+            exposure_value = _coerce_float(max_exposure_notional, "max_exposure_notional")
+            if exposure_value is None or exposure_value <= 0:
+                raise ValueError("max_exposure_notional must be a finite numeric value > 0")
 
         if isinstance(stale_seconds, bool) or not isinstance(stale_seconds, int) or stale_seconds <= 0:
             raise ValueError("stale_seconds must be a positive integer")
@@ -398,6 +422,10 @@ class RiskEngineV2:
         if not isinstance(snapshot.currency, str) or snapshot.currency.strip() == "":
             return RiskDecision(False, "snapshot.currency must be a non-empty string")
 
+        snapshot_norm = _normalize_snapshot(snapshot)
+        if snapshot_norm is None:
+            return RiskDecision(False, "snapshot contains invalid numeric content or invalid datetime")
+
         snapshot_error = snapshot.validate(stale_seconds=self.stale_seconds)
         if snapshot_error:
             return RiskDecision(False, snapshot_error)
@@ -409,11 +437,18 @@ class RiskEngineV2:
         if directional_error:
             return RiskDecision(False, directional_error)
 
-        if snapshot.daily_pnl < -(snapshot.balance * self.max_daily_loss_pct):
+        balance = snapshot_norm["balance"]
+        equity = snapshot_norm["equity"]
+        daily_pnl = snapshot_norm["daily_pnl"]
+        peak_equity = snapshot_norm["peak_equity"]
+        used_margin = snapshot_norm["used_margin"]
+        open_exposure = snapshot_norm["open_exposure"]
+
+        if daily_pnl < -(balance * self.max_daily_loss_pct):
             return RiskDecision(False, "daily loss limit reached")
 
-        peak = max(snapshot.peak_equity, 1e-9)
-        drawdown = (peak - snapshot.equity) / peak
+        peak = max(peak_equity, 1e-9)
+        drawdown = (peak - equity) / peak
         if not isfinite(drawdown):
             return RiskDecision(False, "drawdown is not finite")
         if drawdown > self.max_drawdown_pct:
@@ -461,7 +496,7 @@ class RiskEngineV2:
         if net_rr < 2.0:
             return RiskDecision(False, "net RR after costs < 2.0", risk_reward=net_rr)
 
-        max_risk_budget = snapshot.equity * risk_fraction
+        max_risk_budget = equity * risk_fraction
         if not isfinite(max_risk_budget):
             return RiskDecision(False, "risk budget is not finite")
 
@@ -488,6 +523,28 @@ class RiskEngineV2:
         if not isfinite(notional_exposure):
             return RiskDecision(False, "notional exposure is not finite")
 
+        total_exposure_after_trade = open_exposure + notional_exposure
+        if self.max_exposure_notional is not None:
+            limit = float(self.max_exposure_notional)
+            if not isfinite(limit) or limit <= 0:
+                return RiskDecision(False, "max_exposure_notional is invalid")
+            if total_exposure_after_trade > limit + 1e-9:
+                return RiskDecision(
+                    False,
+                    "exposure limit exceeded",
+                    volume=volume,
+                    risk_per_trade=actual_risk,
+                    risk_reward=net_rr,
+                    metadata={
+                        "notional_exposure": notional_exposure,
+                        "open_exposure_before_trade": open_exposure,
+                        "total_exposure_after_trade": total_exposure_after_trade,
+                        "limit": limit,
+                        "symbol": symbol,
+                        "side": side,
+                    },
+                )
+
         required_margin = self._resolve_margin_required(
             symbol=symbol,
             side=side,
@@ -504,17 +561,19 @@ class RiskEngineV2:
                 risk_reward=net_rr,
                 metadata={
                     "notional_exposure": notional_exposure,
+                    "open_exposure_before_trade": open_exposure,
+                    "total_exposure_after_trade": total_exposure_after_trade,
                     "risk_at_stop": actual_risk,
                     "symbol": symbol,
                     "side": side,
                 },
             )
 
-        total_used_margin_after_trade = snapshot.used_margin + required_margin
+        total_used_margin_after_trade = used_margin + required_margin
         if not isfinite(total_used_margin_after_trade):
             return RiskDecision(False, "used margin after trade is not finite")
 
-        if total_used_margin_after_trade > snapshot.equity * self.max_margin_utilization_pct:
+        if total_used_margin_after_trade > equity * self.max_margin_utilization_pct:
             return RiskDecision(
                 False,
                 "margin utilization exceeds configured cap",
@@ -523,11 +582,13 @@ class RiskEngineV2:
                 risk_reward=net_rr,
                 metadata={
                     "notional_exposure": notional_exposure,
+                    "open_exposure_before_trade": open_exposure,
+                    "total_exposure_after_trade": total_exposure_after_trade,
                     "margin_required": required_margin,
-                    "used_margin_before_trade": snapshot.used_margin,
+                    "used_margin_before_trade": used_margin,
                     "used_margin_after_trade": total_used_margin_after_trade,
                     "risk_at_stop": actual_risk,
-                    "limit": snapshot.equity * self.max_margin_utilization_pct,
+                    "limit": equity * self.max_margin_utilization_pct,
                 },
             )
 
@@ -541,7 +602,9 @@ class RiskEngineV2:
                 "symbol": symbol,
                 "side": side,
                 "notional_exposure": notional_exposure,
-                "used_margin_before_trade": snapshot.used_margin,
+                "open_exposure_before_trade": open_exposure,
+                "total_exposure_after_trade": total_exposure_after_trade,
+                "used_margin_before_trade": used_margin,
                 "margin_required": required_margin,
                 "used_margin_after_trade": total_used_margin_after_trade,
                 "risk_at_stop": actual_risk,
@@ -549,6 +612,5 @@ class RiskEngineV2:
                 "reward_per_lot": reward_per_lot,
                 "stop_distance": stop_distance,
                 "reward_distance": reward_distance,
-                "open_exposure_before_trade": snapshot.open_exposure,
             },
         )
