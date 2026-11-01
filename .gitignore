@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+
+# Secrets : ne jamais commiter
+.env
+
+# Donnees de marche (volumineuses, a regenerer depuis la source)
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Bases locales
+*.sqlite
+*.db
