@@ -8,6 +8,12 @@ from typing import Any, Callable, Dict, Optional, Union
 
 NumericLike = Union[int, float, Decimal, str]
 
+# Relative tolerance applied to the daily-loss and drawdown thresholds. Floating
+# point error can make a loss that is "exactly" at the limit compare as a hair
+# below it (e.g. 0.19999999999999993 < 0.20). The tolerance errs on the safe
+# side: a limit is considered reached when within 1e-9 (relative) of it.
+_BOUNDARY_REL_TOL = 1e-9
+
 
 def _coerce_float(value: Any, field_name: str) -> Optional[float]:
     if value is None:
@@ -132,6 +138,14 @@ class InstrumentSpec:
     """Instrument specification.
 
     contract_size is the number of units of the base asset per lot.
+
+    Cost conventions (the spread must be counted exactly once):
+    - spread: bid/ask spread in price units. The engine converts it to account
+      currency per lot via tick_size / tick_value_per_lot and adds it to the
+      risk side and subtracts it from the reward side.
+    - round_trip_cost_per_lot: commissions/fees for a full round trip (open and
+      close), in account currency per lot. It must NOT include the spread.
+      Putting the spread in both fields would count it twice.
     """
 
     symbol: str
@@ -460,14 +474,15 @@ class RiskEngineV2:
         used_margin = snapshot_norm["used_margin"]
         open_exposure = snapshot_norm["open_exposure"]
 
-        if daily_pnl <= -(balance * self.max_daily_loss_pct):
+        daily_loss_limit = balance * self.max_daily_loss_pct
+        if -daily_pnl >= daily_loss_limit * (1.0 - _BOUNDARY_REL_TOL):
             return RiskDecision(False, "daily loss limit reached")
 
         peak = max(peak_equity, 1e-9)
         drawdown = (peak - equity) / peak
         if not isfinite(drawdown):
             return RiskDecision(False, "drawdown is not finite")
-        if drawdown >= self.max_drawdown_pct:
+        if drawdown >= self.max_drawdown_pct * (1.0 - _BOUNDARY_REL_TOL):
             return RiskDecision(False, "drawdown limit reached")
 
         risk_fraction = _coerce_float(risk_pct if risk_pct is not None else self.risk_pct, "risk_pct")
