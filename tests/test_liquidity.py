@@ -2,55 +2,50 @@ from __future__ import annotations
 
 import pandas as pd
 
-from fastlife_quant.ict_smc import detect_bos, detect_choch, detect_swing_high, detect_swing_low
+from fastlife_quant.ict_smc import (
+    detect_bsl,
+    detect_equal_highs,
+    detect_equal_lows,
+    detect_inducement,
+    detect_liquidity_sweep,
+    detect_ssl,
+)
 
 
 def make_df():
     return pd.DataFrame(
         {
-            "timestamp": pd.date_range("2026-01-05 00:00", periods=9, freq="5min", tz="UTC"),
-            "open": [100, 101, 102, 103, 104, 105, 104, 103, 102],
-            "high": [101, 102, 103, 104, 105, 106, 105, 104, 103],
-            "low": [99, 100, 101, 102, 103, 104, 103, 102, 101],
-            "close": [100, 101, 102, 103, 104, 105, 104, 103, 102],
-            "timeframe": ["M5"] * 9,
+            "timestamp": pd.date_range("2026-01-05 00:00", periods=6, freq="5min", tz="UTC"),
+            "open": [100.0, 101.0, 101.5, 102.0, 103.0, 104.0],
+            "high": [101.0, 102.0, 102.5, 103.0, 104.0, 105.0],
+            "low": [99.0, 100.0, 100.5, 101.0, 102.0, 103.0],
+            "close": [100.5, 101.5, 102.0, 102.5, 103.5, 104.5],
+            "timeframe": ["M5"] * 6,
         }
     )
 
 
-def test_swing_high_detects_local_peak():
+def test_bsl_and_ssl_detected():
     df = make_df()
-    ev = detect_swing_high(df, 5)
-    assert ev is not None
-    assert ev.event_type == "swing_high"
-    assert ev.confirmed is True
+    assert detect_bsl(df, 3) is not None
+    assert detect_ssl(df, 3) is not None
 
 
-def test_swing_low_detects_local_trough():
+def test_equal_highs_and_lows():
+    df = make_df().copy()
+    df.loc[1, "high"] = df.loc[0, "high"]
+    df.loc[3, "low"] = df.loc[2, "low"]
+    assert detect_equal_highs(df, 1) is not None
+    assert detect_equal_lows(df, 3) is not None
+
+
+def test_liquidity_sweep_and_inducement():
     df = make_df()
-    ev = detect_swing_low(df, 7)
-    assert ev is not None
-    assert ev.event_type == "swing_low"
+    assert detect_liquidity_sweep(df, 3) is not None
+    assert detect_inducement(df, 3) is not None
 
 
-def test_bos_detects_uptrend_sequence():
-    df = make_df()
-    ev = detect_bos(df, 5)
-    assert ev is not None and ev.direction == "bullish"
-
-
-def test_choch_detects_trend_change():
-    df = make_df()
-    ev = detect_choch(df, 5)
-    assert ev is not None and ev.direction == "bullish"
-
-
-def test_prefix_invariance_for_market_structure():
-    base = make_df()
-    prefix = base.iloc[:6].copy()
-    earlier = detect_bos(prefix, 5)
-    later = detect_bos(base, 5)
-    assert earlier is not None
-    assert later is not None
-    assert earlier.event_type == later.event_type
-    assert earlier.direction == later.direction
+def test_missing_or_invalid_data_is_handled():
+    df = pd.DataFrame({"timestamp": [], "open": [], "high": [], "low": [], "close": [], "timeframe": []})
+    assert detect_bsl(df, 0) is None
+    assert detect_ssl(df, 0) is None

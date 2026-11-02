@@ -2,142 +2,128 @@ from __future__ import annotations
 
 import pandas as pd
 
-from fastlife_quant.ict_smc.atr import compute_atr
 from fastlife_quant.ict_smc.config import ICTSMCConfig
 from fastlife_quant.ict_smc.events import ICTEvent
 
 
-def detect_bullish_order_block(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None) -> ICTEvent | None:
+def detect_premium(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None) -> ICTEvent | None:
     config = config or ICTSMCConfig()
-    if idx < 2:
-        return None
-    current = df.iloc[idx]
-    prev = df.iloc[idx - 1]
-    atr = compute_atr(df.iloc[: idx + 1], period=config.atr_period).iloc[-1]
-    if atr == 0:
-        return None
-    # derniere bougie baissiere avant un deplacement haussier significatif
-    bearish_prev = df.iloc[:idx].tail(10)
-    if bearish_prev.empty:
-        return None
-    last_bearish = bearish_prev.loc[bearish_prev["close"] == bearish_prev["close"].min()].iloc[-1]
-    if float(current["close"]) - float(last_bearish["close"]) >= atr * config.order_block_atr_threshold:
-        return ICTEvent(
-            event_type="bullish_order_block",
-            direction="bullish",
-            timeframe=str(df["timeframe"].iloc[idx]) if "timeframe" in df.columns else "unknown",
-            timestamp=current["timestamp"],
-            price=float(last_bearish["close"]),
-            reference_bars=[last_bearish["timestamp"], current["timestamp"]],
-            trigger_conditions=("last_opposite_candle_before_move", "displacement_above_atr_threshold"),
-            parameters={"atr_period": config.atr_period, "order_block_atr_threshold": config.order_block_atr_threshold},
-            confirmed=True,
-            invalidation_level=float(last_bearish["close"]),
-        )
-    return None
-
-
-def detect_bearish_order_block(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None) -> ICTEvent | None:
-    config = config or ICTSMCConfig()
-    if idx < 2:
-        return None
-    current = df.iloc[idx]
-    atr = compute_atr(df.iloc[: idx + 1], period=config.atr_period).iloc[-1]
-    if atr == 0:
-        return None
-    bullish_prev = df.iloc[:idx].tail(10)
-    if bullish_prev.empty:
-        return None
-    last_bullish = bullish_prev.loc[bullish_prev["close"] == bullish_prev["close"].max()].iloc[-1]
-    if float(last_bullish["close"]) - float(current["close"]) >= atr * config.order_block_atr_threshold:
-        return ICTEvent(
-            event_type="bearish_order_block",
-            direction="bearish",
-            timeframe=str(df["timeframe"].iloc[idx]) if "timeframe" in df.columns else "unknown",
-            timestamp=current["timestamp"],
-            price=float(last_bullish["close"]),
-            reference_bars=[last_bullish["timestamp"], current["timestamp"]],
-            trigger_conditions=("last_opposite_candle_before_move", "displacement_below_atr_threshold"),
-            parameters={"atr_period": config.atr_period, "order_block_atr_threshold": config.order_block_atr_threshold},
-            confirmed=True,
-            invalidation_level=float(last_bullish["close"]),
-        )
-    return None
-
-
-def detect_mitigation(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None) -> ICTEvent | None:
     if idx < 1:
         return None
     current = df.iloc[idx]
-    prev = df.iloc[idx - 1]
-    if float(current["close"]) >= float(prev["close"]) and float(current["low"]) <= float(prev["low"]):
+    high = df["high"].iloc[: idx + 1].max()
+    low = df["low"].iloc[: idx + 1].min()
+    range_size = high - low
+    if range_size == 0:
+        return None
+    if (current["close"] - low) / range_size > config.premium_threshold:
         return ICTEvent(
-            event_type="mitigation",
+            event_type="premium",
             direction="bullish",
             timeframe=str(df["timeframe"].iloc[idx]) if "timeframe" in df.columns else "unknown",
             timestamp=current["timestamp"],
-            price=float(current["low"]),
-            reference_bars=[prev["timestamp"], current["timestamp"]],
-            trigger_conditions=("mitigation_bullish",),
-            parameters={},
+            price=float(current["close"]),
+            reference_bars=[df["timestamp"].iloc[: idx + 1].min(), df["timestamp"].iloc[: idx + 1].max()],
+            trigger_conditions=("price_above_premium_zone",),
+            parameters={"premium_threshold": config.premium_threshold},
             confirmed=True,
-            invalidation_level=float(prev["low"]),
-        )
-    if float(current["close"]) <= float(prev["close"]) and float(current["high"]) >= float(prev["high"]):
-        return ICTEvent(
-            event_type="mitigation",
-            direction="bearish",
-            timeframe=str(df["timeframe"].iloc[idx]) if "timeframe" in df.columns else "unknown",
-            timestamp=current["timestamp"],
-            price=float(current["high"]),
-            reference_bars=[prev["timestamp"], current["timestamp"]],
-            trigger_conditions=("mitigation_bearish",),
-            parameters={},
-            confirmed=True,
-            invalidation_level=float(prev["high"]),
+            invalidation_level=float(high),
         )
     return None
 
 
-def detect_breaker_block(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None) -> ICTEvent | None:
+def detect_discount(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None) -> ICTEvent | None:
     config = config or ICTSMCConfig()
-    if idx < 3:
+    if idx < 1:
         return None
     current = df.iloc[idx]
-    prev = df.iloc[idx - 1]
-    prev2 = df.iloc[idx - 2]
-    if float(current["close"]) > float(prev["close"]) > float(prev2["close"]):
+    high = df["high"].iloc[: idx + 1].max()
+    low = df["low"].iloc[: idx + 1].min()
+    range_size = high - low
+    if range_size == 0:
+        return None
+    if (high - current["close"]) / range_size > (1 - config.discount_threshold):
         return ICTEvent(
-            event_type="breaker_block",
-            direction="bullish",
-            timeframe=str(df["timeframe"].iloc[idx]) if "timeframe" in df.columns else "unknown",
-            timestamp=current["timestamp"],
-            price=float(current["close"]),
-            reference_bars=[prev2["timestamp"], prev["timestamp"], current["timestamp"]],
-            trigger_conditions=("breaker_block_bullish",),
-            parameters={"atr_period": config.atr_period},
-            confirmed=True,
-            invalidation_level=float(prev["close"]),
-        )
-    if float(current["close"]) < float(prev["close"]) < float(prev2["close"]):
-        return ICTEvent(
-            event_type="breaker_block",
+            event_type="discount",
             direction="bearish",
             timeframe=str(df["timeframe"].iloc[idx]) if "timeframe" in df.columns else "unknown",
             timestamp=current["timestamp"],
             price=float(current["close"]),
-            reference_bars=[prev2["timestamp"], prev["timestamp"], current["timestamp"]],
-            trigger_conditions=("breaker_block_bearish",),
-            parameters={"atr_period": config.atr_period},
+            reference_bars=[df["timestamp"].iloc[: idx + 1].min(), df["timestamp"].iloc[: idx + 1].max()],
+            trigger_conditions=("price_below_discount_zone",),
+            parameters={"discount_threshold": config.discount_threshold},
             confirmed=True,
-            invalidation_level=float(prev["close"]),
+            invalidation_level=float(low),
         )
     return None
+
+
+def detect_equilibrium(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None) -> ICTEvent | None:
+    if idx < 1:
+        return None
+    current = df.iloc[idx]
+    high = df["high"].iloc[: idx + 1].max()
+    low = df["low"].iloc[: idx + 1].min()
+    mid = (high + low) / 2
+    if abs(float(current["close"]) - mid) <= abs(high - low) * 0.05:
+        return ICTEvent(
+            event_type="equilibrium",
+            direction="neutral",
+            timeframe=str(df["timeframe"].iloc[idx]) if "timeframe" in df.columns else "unknown",
+            timestamp=current["timestamp"],
+            price=float(mid),
+            reference_bars=[df["timestamp"].iloc[: idx + 1].min(), df["timestamp"].iloc[: idx + 1].max()],
+            trigger_conditions=("close_near_midpoint",),
+            parameters={},
+            confirmed=True,
+            invalidation_level=float(mid),
+        )
+    return None
+
+
+def detect_ote(df: pd.DataFrame, idx: int, config: ICTSMCConfig | None = None) -> ICTEvent | None:
+    config = config or ICTSMCConfig()
+    if idx < 1:
+        return None
+    current = df.iloc[idx]
+    high = df["high"].iloc[: idx + 1].max()
+    low = df["low"].iloc[: idx + 1].min()
+    ote = low + (high - low) * config.ote_level
+    if float(current["close"]) <= ote <= float(current["high"]) or float(current["low"]) <= ote <= float(current["close"]):
+        return ICTEvent(
+            event_type="ote",
+            direction="bullish",
+            timeframe=str(df["timeframe"].iloc[idx]) if "timeframe" in df.columns else "unknown",
+            timestamp=current["timestamp"],
+            price=float(ote),
+            reference_bars=[df["timestamp"].iloc[: idx + 1].min(), df["timestamp"].iloc[: idx + 1].max()],
+            trigger_conditions=("price_in_ote_range",),
+            parameters={"ote_level": config.ote_level},
+            confirmed=True,
+            invalidation_level=float(ote),
+        )
+    return None
+
+
+def multi_timeframe_analysis(df_map: dict[str, pd.DataFrame]) -> dict[str, object]:
+    """Analyse multi-timeframe simple: renvoie les niveaux de tendance agreges."""
+    summary: dict[str, object] = {}
+    for tf, frame in df_map.items():
+        if frame.empty:
+            continue
+        summary[tf] = {
+            "last_close": float(frame["close"].iloc[-1]),
+            "last_high": float(frame["high"].iloc[-1]),
+            "last_low": float(frame["low"].iloc[-1]),
+            "trend": "bullish" if frame["close"].iloc[-1] >= frame["close"].iloc[0] else "bearish",
+        }
+    return summary
 
 
 __all__ = [
-    "detect_bullish_order_block",
-    "detect_bearish_order_block",
-    "detect_mitigation",
-    "detect_breaker_block",
+    "detect_premium",
+    "detect_discount",
+    "detect_equilibrium",
+    "detect_ote",
+    "multi_timeframe_analysis",
 ]

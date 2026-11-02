@@ -1,28 +1,33 @@
-from __future__ import annotations
+# Phase 3 - ICT/SMC Engine
 
+## Objectif
 
-def win_rate(results: list[float]) -> float:
-    if not results:
-        return 0.0
-    return sum(1 for r in results if r > 0) / len(results)
+Le moteur ICT/SMC fournit des evenements explicables pour XAUUSD en respectant strictement les regles de la donnee et l'absence de look-ahead.
 
+## Parametres
 
-def expectancy(results: list[float]) -> float:
-    return sum(results) / len(results) if results else 0.0
+- `swing_left_bars`: 3 bougies de gauche
+- `swing_right_bars`: 3 bougies de droite
+- `confirmation_only_closed`: confirmation uniquement sur des bougies closes
+- `atr_period`: periode ATR par defaut 14
+- `fvg_atr_filter`: filtre optionnel sur l'ATR
+- `order_block_atr_threshold`: seuil de deplacement mesure en ATR
+- `structural_confirmation_bars`: nombre de bougies de confirmation structurelle
 
+## Principes
 
-def profit_factor(results: list[float]) -> float:
-    gains = sum(r for r in results if r > 0)
-    losses = abs(sum(r for r in results if r < 0))
-    return gains / losses if losses else float("inf") if gains else 0.0
+- Le moteur n'utilise que des donnees disponibles jusqu'a l'index courant.
+- Les evenements contiennent: type, direction, timeframe, timestamp, prix, bougies de reference, conditions, parametres, confirmation, invalidation.
+- Les donnees synthétiques de tests sont clairement identifiees.
 
+## Detecteurs implementes
 
-def average_win_loss(results: list[float]) -> tuple[float, float]:
-    wins = [r for r in results if r > 0]
-    losses = [r for r in results if r < 0]
-    avg_win = sum(wins) / len(wins) if wins else 0.0
-    avg_loss = abs(sum(losses) / len(losses)) if losses else 0.0
-    return avg_win, avg_loss
+- Market structure: swing high, swing low, BOS, CHoCH, MSS, internal/external structure
+- Liquidity: BSL, SSL, equal highs/lows, liquidity sweep, inducement
+- Imbalance: bullish/bearish FVG, inverse FVG, displacement
+- Order blocks: bullish/bearish order block, mitigation, breaker block
+- Contexte: premium, discount, equilibrium, OTE et analyse multi-timeframe
 
+## Validation
 
-__all__ = ["win_rate", "expectancy", "profit_factor", "average_win_loss"]
+Les tests Pytest couvrent les cas positifs, negatifs, donnees invalides et invariance de prefixe.
