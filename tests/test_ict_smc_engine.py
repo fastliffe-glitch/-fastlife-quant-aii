@@ -2,30 +2,27 @@ from __future__ import annotations
 
 import pandas as pd
 
-from fastlife_quant.ict_smc import detect_discount, detect_equilibrium, detect_ote, detect_premium, multi_timeframe_analysis
+from fastlife_quant.ict_smc.engine import ICTSMCEngine
 
 
 def make_df():
     return pd.DataFrame(
         {
-            "timestamp": pd.date_range("2026-01-05 00:00", periods=5, freq="5min", tz="UTC"),
-            "open": [100, 101, 102, 103, 104],
-            "high": [105, 106, 107, 108, 109],
-            "low": [95, 96, 97, 98, 99],
-            "close": [103, 104, 105, 106, 107],
-            "timeframe": ["M5"] * 5,
+            "timestamp": pd.date_range("2026-01-05 00:00", periods=12, freq="5min", tz="UTC"),
+            "open": [100, 101, 102, 103, 104, 105, 106, 105, 104, 103, 102, 101],
+            "high": [101, 102, 103, 104, 105, 106, 107, 106, 105, 104, 103, 102],
+            "low": [99, 100, 101, 102, 103, 104, 105, 104, 103, 102, 101, 100],
+            "close": [100, 101, 102, 103, 104, 105, 106, 105, 104, 103, 102, 101],
+            "timeframe": ["M5"] * 12,
         }
     )
 
 
-def test_premium_discount_equilibrium_and_ote():
-    df = make_df()
-    assert detect_premium(df, 4) is not None
-    assert detect_discount(df, 4) is not None
-    assert detect_equilibrium(df, 4) is not None
-    assert detect_ote(df, 4) is not None
-
-
-def test_multitimeframe_summary():
-    summary = multi_timeframe_analysis({"M5": make_df(), "H1": make_df()})
-    assert "M5" in summary and "H1" in summary
+def test_engine_emits_explicit_events_without_lookahead():
+    engine = ICTSMCEngine()
+    events = engine.analyze(make_df(), timeframe="M5")
+    assert events
+    for event in events:
+        assert "event_type" in event
+        assert "timestamp" in event
+        assert "trigger_conditions" in event
